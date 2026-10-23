@@ -35,29 +35,32 @@ class Yay(dotbot.Plugin):
         return self._process(data)
 
     def _process(self, packages):
-        defaults = self._context.defaults().get('yay', {})
         results = {}
         successful = [PkgStatus.UP_TO_DATE, PkgStatus.UPDATED, PkgStatus.INSTALLED]
 
-        for pkg in packages:
-            if isinstance(pkg, dict):
-                self._log.error('Incorrect format')
-            elif isinstance(pkg, list):
-                # self._log.error('Incorrect format')
-                pass
+        # One pacman query instead of one yay start per package. Groups and provides names are
+        # not in this list, so they still go through yay below.
+        installed = set(subprocess.run(['pacman', '-Qq'], capture_output=True, text=True).stdout.split())
+        missing = [pkg for pkg in packages if pkg not in installed]
+        if len(packages) > len(missing):
+            results[PkgStatus.UP_TO_DATE] = len(packages) - len(missing)
+
+        if missing:
+            self._log.info('Installing {} packages. Please wait...'.format(len(missing)))
+            if subprocess.run(['yay', '--needed', '--noconfirm', '-S', *missing],
+                              env=dict(os.environ, LANG='en_US')).returncode == 0:
+                results[PkgStatus.INSTALLED] = len(missing)
             else:
-                pass
-            result = self._install(pkg)
-            results[result] = results.get(result, 0) + 1
-            if result not in successful:
-                self._log.error("Could not install package '{}'".format(pkg))
+                # the batch failed as a whole: retry one by one to find the culprit
+                for pkg in missing:
+                    result = self._install(pkg)
+                    results[result] = results.get(result, 0) + 1
+                    if result not in successful:
+                        self._log.error("Could not install package '{}'".format(pkg))
 
-
-        if all([result in successful for result in results.keys()]):
+        success = all(result in successful for result in results)
+        if success:
             self._log.info('\nAll packages installed successfully')
-            success = True
-        else:
-            success = False
 
         for status, amount in results.items():
             log = self._log.info if status in successful else self._log.error
